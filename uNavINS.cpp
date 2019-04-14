@@ -37,6 +37,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 #include "uNavINS.h"
 
 void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,double lon,double alt,float p,float q,float r,float ax,float ay,float az,float hx,float hy, float hz) {
+  //TODO proceed to init in another function?
   if (!initialized) {
     // initial attitude and heading
     theta = asinf(ax/G);
@@ -99,7 +100,7 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     vn_ins = vn;
     ve_ins = ve;
     vd_ins = vd;
-    // specific force
+    // specific force -> unbiased measurement
     f_b(0,0) = ax;
     f_b(1,0) = ay;
     f_b(2,0) = az;
@@ -111,17 +112,25 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     // get the change in time
     _dt = (float)_t/1000.0;
     _t = 0;
-    lla_ins(0,0) = lat_ins;
+
+    // Keep in memory the velocity and ll before update
+    lla_ins(0,0) = lat_ins; 
     lla_ins(1,0) = lon_ins;
     lla_ins(2,0) = alt_ins;
-    V_ins(0,0) = vn_ins;
+    V_ins(0,0) = vn_ins; 
     V_ins(1,0) = ve_ins;
     V_ins(2,0) = vd_ins;
+
+// ----------------------- PROPAGATION = PREDICTION -----------------------------------
+
     // AHRS Transformations
+    // compute this guy using the PREVIOUOS quat... why? -> needed for Jacobian = linearization. ok
     C_N2B = quat2dcm(quat);
     C_B2N = C_N2B.transpose();
-    // Attitude Update
-    dq(0) = 1.0f;
+    
+    // Time update of the Attitude p,q,r
+    // = time integration of the quaternion
+    dq(0) = 1.0f; 
     dq(1) = 0.5f*om_ib(0,0)*_dt;
     dq(2) = 0.5f*om_ib(1,0)*_dt;
     dq(3) = 0.5f*om_ib(2,0)*_dt;
@@ -131,21 +140,37 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     if (quat(0) < 0) {
       quat = -1.0f*quat;
     }
+    //quat can now be used to retreive updated Euler angles
+
     // obtain euler angles from quaternion
     theta = asinf(-2.0f*(quat(1,0)*quat(3,0)-quat(0,0)*quat(2,0)));
     phi = atan2f(2.0f*(quat(0,0)*quat(1,0)+quat(2,0)*quat(3,0)),1.0f-2.0f*(quat(1,0)*quat(1,0)+quat(2,0)*quat(2,0)));
     psi = atan2f(2.0f*(quat(1,0)*quat(2,0)+quat(0,0)*quat(3,0)),1.0f-2.0f*(quat(2,0)*quat(2,0)+quat(3,0)*quat(3,0)));
-    // Velocity Update
-    dx = C_B2N*f_b + grav;
+    
+    // Acceleration time update:
+    // -> assuming ddt = 0, so do nothing. 
+    // f_b is the acceleration from previous time step in BODY FRAME !!!
+    // -> C_B2N changes frame between PREVIOUS body frame and earth frame.
+    // NOTE TODO: we could actually rotate it, according to our new Euler angles...
+    // ... It might be a good idea to assume that the acceleration 
+    //    (i.e. the forces) remain ~constant in the body axes !
+    // -> 'just' need to compute an update of C_B2N... see the impact on performances?
+
+    // Velocity time Update
+    dx = C_B2N*f_b + grav;   //DG TODO: delete this gravity and just assume it is inside f_b
     vn_ins += _dt*dx(0,0);
     ve_ins += _dt*dx(1,0);
     vd_ins += _dt*dx(2,0);
-    // Position Update
-    dxd = llarate(V_ins,lla_ins);
+
+    // Position time Update
+    dxd = llarate(V_ins,lla_ins); //RIGHT! take the velocity before update to remain consistent
     lat_ins += _dt*dxd(0,0);
     lon_ins += _dt*dxd(1,0);
     alt_ins += _dt*dxd(2,0);
-    // Jacobian
+
+    // ----------------------------Jacobian-------------------------------------------
+    // We did the time update of the states, and we linearize the Transformations
+    // to obtain the Jacobian that we feed in Kalman stuff
     Fs.setZero();
     // ... pos2gs
     Fs.block(0,3,3,3) = Eigen::Matrix<float,3,3>::Identity();
@@ -162,21 +187,30 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     // ... Accel Markov Bias
     Fs.block(9,9,3,3) = -1.0f/TAU_A*Eigen::Matrix<float,3,3>::Identity();
     Fs.block(12,12,3,3) = -1.0f/TAU_G*Eigen::Matrix<float,3,3>::Identity();
+
     // State Transition Matrix
     PHI = Eigen::Matrix<float,15,15>::Identity()+Fs*_dt;
+    
+//DG: I don't understand here: 
+// Fs is the Jacobian, so I agree that [x_t+1] = [x_t] + Fs * [x_t] = PHI * [x_t]
+// but the covariance is supposed to be obtained with Fs, not with PHI???
+
     // Process Noise
     Gs.setZero();
     Gs.block(3,0,3,3) = -C_B2N;
     Gs.block(6,3,3,3) = -0.5f*Eigen::Matrix<float,3,3>::Identity();
     Gs.block(9,6,6,6) = Eigen::Matrix<float,6,6>::Identity();
+
     // Discrete Process Noise
     Q = PHI*_dt*Gs*Rw*Gs.transpose();
     Q = 0.5f*(Q+Q.transpose());
+
     // Covariance Time Update
     P = PHI*P*PHI.transpose()+Q;
     P = 0.5f*(P+P.transpose());
 
-    // Gps measurement update
+// ----------------------- CORRECTION = KALMAN -----------------------------------
+
     if ((TOW - previousTOW) > 0) {
       previousTOW = TOW;
       lla_gps(0,0) = lat;
@@ -205,20 +239,26 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       y(5,0) = (float)(V_gps(2,0) - V_ins(2,0));
       // Kalman gain
       K = P*H.transpose()*(H*P*H.transpose() + R).inverse();
-      // Covariance update
+      // Covariance update (a posteriori)
       P = (Eigen::Matrix<float,15,15>::Identity()-K*H)*P*(Eigen::Matrix<float,15,15>::Identity()-K*H).transpose() + K*R*K.transpose();
       // State update
       x = K*y;
+
+      //Updating all other variables related to states:  
+
       denom = (1.0 - (ECC2 * pow(sin(lla_ins(0,0)),2.0)));
       denom = sqrt(denom*denom);
       Re = EARTH_RADIUS / sqrt(denom);
       Rn = EARTH_RADIUS*(1.0-ECC2) / denom*sqrt(denom);
+      
       alt_ins = alt_ins - x(2,0);
       lat_ins = lat_ins + x(0,0) / (Re + alt_ins);
       lon_ins = lon_ins + x(1,0) / (Rn + alt_ins) / cos(lat_ins);
+
       vn_ins = vn_ins + x(3,0);
       ve_ins = ve_ins + x(4,0);
       vd_ins = vd_ins + x(5,0);
+      
       // Attitude correction
       dq(0,0) = 1.0f;
       dq(1,0) = x(6,0);
@@ -230,6 +270,8 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       theta = asinf(-2.0f*(quat(1,0)*quat(3,0)-quat(0,0)*quat(2,0)));
       phi = atan2f(2.0f*(quat(0,0)*quat(1,0)+quat(2,0)*quat(3,0)),1.0f-2.0f*(quat(1,0)*quat(1,0)+quat(2,0)*quat(2,0)));
       psi = atan2f(2.0f*(quat(1,0)*quat(2,0)+quat(0,0)*quat(3,0)),1.0f-2.0f*(quat(2,0)*quat(2,0)+quat(3,0)*quat(3,0)));
+
+      // These are the biases on acceleration and gyro measurements, that we track as states.
       abx = abx + x(9,0);
       aby = aby + x(10,0);
       abz = abz + x(11,0);
@@ -243,6 +285,7 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     f_b(1,0) = ay - aby;
     f_b(2,0) = az - abz;
 
+    //DG TODO: why do you use p,q,r here??? you have it in your states! 6->8
     om_ib(0,0) = p - gbx;
     om_ib(1,0) = q - gby;
     om_ib(2,0) = r - gbz;
