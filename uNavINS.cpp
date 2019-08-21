@@ -36,7 +36,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SO
 
 #include "uNavINS.h"
 
-void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,double lon,double alt,float p,float q,float r,float ax,float ay,float az,float hx,float hy, float hz) {
+void uNavINS::update(double TOW,double vn,double ve,double vd,double lat,double lon,double alt,float p,float q,float r,float ax,float ay,float az,float hx,float hy, float hz) {
   //TODO proceed to init in another function?
   if (!initialized) {
     // initial attitude and heading
@@ -51,6 +51,9 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     } else {
       psi= 3.0f*M_PI/2.0f - atanf(Bxc/-Byc);
     }
+
+psi = 0;
+
     psi = constrainAngle180(psi);
     psi_initial = psi;
     // euler to quaternion
@@ -105,13 +108,19 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     f_b(1,0) = ay;
     f_b(2,0) = az;
     /* initialize the time */
-    _t = 0;
+    _t = TOW;
     // initialized flag
     initialized = true;
   } else {
     // get the change in time
-    _dt = (float)_t/1000.0;
-    _t = 0;
+    _dt = (TOW-_t);
+    _t = TOW;
+    // _dt = (float)_t/1000.0;
+    // _t = 0;
+
+#ifdef DEBUG
+    printf("%12.10lf,%12.10lf - %12.10lf,%12.10lf  -  %12.10lf,%12.10lf\n",_t,_dt,lat,lat_ins,lon,lon_ins);
+#endif  
 
     // Keep in memory the velocity and ll before update
     lla_ins(0,0) = lat_ins; 
@@ -124,7 +133,7 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
 // ----------------------- PROPAGATION = PREDICTION -----------------------------------
 
     // AHRS Transformations
-    // compute this guy using the PREVIOUOS quat... why? -> needed for Jacobian = linearization. ok
+    // compute this guy using the PREVIOUS quat... why? -> needed for Jacobian = linearization. ok
     C_N2B = quat2dcm(quat);
     C_B2N = C_N2B.transpose();
     
@@ -134,7 +143,10 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     dq(1) = 0.5f*om_ib(0,0)*_dt;
     dq(2) = 0.5f*om_ib(1,0)*_dt;
     dq(3) = 0.5f*om_ib(2,0)*_dt;
+    printf("qd: %f,%f,%f,%f  \n ",dq(0),dq(1,0),dq(2,0),dq(3,0));
+    printf("Q: %f,%f,%f,%f \n  ",quat(0,0),quat(1,0),quat(2,0),quat(3,0));
     quat = qmult(quat,dq);
+    
     quat.normalize();
     // Avoid quaternion flips sign
     if (quat(0) < 0) {
@@ -146,7 +158,13 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     theta = asinf(-2.0f*(quat(1,0)*quat(3,0)-quat(0,0)*quat(2,0)));
     phi = atan2f(2.0f*(quat(0,0)*quat(1,0)+quat(2,0)*quat(3,0)),1.0f-2.0f*(quat(1,0)*quat(1,0)+quat(2,0)*quat(2,0)));
     psi = atan2f(2.0f*(quat(1,0)*quat(2,0)+quat(0,0)*quat(3,0)),1.0f-2.0f*(quat(2,0)*quat(2,0)+quat(3,0)*quat(3,0)));
-    
+
+
+
+#ifdef DEBUG    
+    printf("Q: %f,%f,%f,%f \n",quat(0,0),quat(1,0),quat(2,0),quat(3,0));
+    printf("angles: %f,%f,%f\n",theta,phi,psi);
+#endif
     // Acceleration time update:
     // -> assuming ddt = 0, so do nothing. 
     // f_b is the acceleration from previous time step in BODY FRAME !!!
@@ -157,10 +175,14 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
     // -> 'just' need to compute an update of C_B2N... see the impact on performances?
 
     // Velocity time Update
-    dx = C_B2N*f_b + grav;   //DG TODO: delete this gravity and just assume it is inside f_b
+    dx = C_B2N*f_b + grav;   //DG: deleting the gravity vector from f_b !!
     vn_ins += _dt*dx(0,0);
     ve_ins += _dt*dx(1,0);
     vd_ins += _dt*dx(2,0);
+
+#ifdef DEBUG
+  printf("dx/fb: %f,%f,%f,%f,%f,%f \n ",dx(0,0),dx(1,0),dx(2,0),f_b(0,0),f_b(1,0),f_b(2,0));
+#endif      
 
     // Position time Update
     dxd = llarate(V_ins,lla_ins); //RIGHT! take the velocity before update to remain consistent
@@ -225,6 +247,10 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       V_ins(0,0) = vn_ins;
       V_ins(1,0) = ve_ins;
       V_ins(2,0) = vd_ins;
+
+#ifdef DEBUG
+  printf("Vs: %lf,%lf,%lf,%lf,%lf,%lf  ",V_gps(0,0),V_gps(1,0),V_gps(2,0),V_ins(0,0),V_ins(1,0),V_ins(2,0));
+#endif      
       // Position, converted to NED
       pos_ecef_ins = lla2ecef(lla_ins);
       pos_ned_ins = ecef2ned(pos_ecef_ins,lla_ins);
@@ -237,12 +263,21 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       y(3,0) = (float)(V_gps(0,0) - V_ins(0,0));
       y(4,0) = (float)(V_gps(1,0) - V_ins(1,0));
       y(5,0) = (float)(V_gps(2,0) - V_ins(2,0));
+
+    #ifdef DEBUG
+      printf("meas: %f,%f,%f,%f,%f,%f  ",y(0,0),y(1,0),y(2,0),y(3,0),y(4,0),y(5,0));
+    #endif
+
       // Kalman gain
       K = P*H.transpose()*(H*P*H.transpose() + R).inverse();
       // Covariance update (a posteriori)
       P = (Eigen::Matrix<float,15,15>::Identity()-K*H)*P*(Eigen::Matrix<float,15,15>::Identity()-K*H).transpose() + K*R*K.transpose();
       // State update
       x = K*y;
+
+#ifdef DEBUG
+      printf("S: %f,%f,%f,%f,%f,%f,%f   \n",x(0,0),x(1,0),x(2,0),x(3,0),x(4,0),x(5,0),x(6,0),x(7,0));
+#endif
 
       //Updating all other variables related to states:  
 
@@ -266,6 +301,9 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       dq(3,0) = x(8,0);
       quat = qmult(quat,dq);
       quat.normalize();
+
+      printf("TPS : %f,%f,%f    ",theta, phi, psi);
+
       // obtain euler angles from quaternion
       theta = asinf(-2.0f*(quat(1,0)*quat(3,0)-quat(0,0)*quat(2,0)));
       phi = atan2f(2.0f*(quat(0,0)*quat(1,0)+quat(2,0)*quat(3,0)),1.0f-2.0f*(quat(1,0)*quat(1,0)+quat(2,0)*quat(2,0)));
@@ -278,18 +316,26 @@ void uNavINS::update(unsigned long TOW,double vn,double ve,double vd,double lat,
       gbx = gbx + x(12,0);
       gby = gby + x(13,0);
       gbz = gbz + x(14,0);
+
+      printf("update: %f,%f,%f\n",theta, phi, psi);
     }
     // Get the new Specific forces and Rotation Rate,
     // use in the next time update
-    f_b(0,0) = ax - abx;
-    f_b(1,0) = ay - aby;
-    f_b(2,0) = az - abz;
+    f_b(0,0) = ax; //- abx;
+    f_b(1,0) = ay; //- aby;
+    f_b(2,0) = az; //- abz;
+
+#ifdef DEBUG
+      printf("f_bEND: %f,%f,%f\n",f_b(0,0),f_b(1,0),f_b(2,0));
+#endif
 
     //DG TODO: why do you use p,q,r here??? you have it in your states! 6->8
-    om_ib(0,0) = p - gbx;
-    om_ib(1,0) = q - gby;
-    om_ib(2,0) = r - gbz;
+    om_ib(0,0) = p; //- gbx;
+    om_ib(1,0) = q; //- gby;
+    om_ib(2,0) = r; //- gbz;
   }
+
+  printf("\n\n");
 }
 
 // returns the pitch angle, rad
