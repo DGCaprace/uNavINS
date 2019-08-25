@@ -9,7 +9,7 @@ CC = gcc-9
 CXX = g++-9
 
 
-CXXFLAGS := -g -Wall -O0 --debug -std=c++11 -DDEBUG
+CXXFLAGS := -g -Wall -O0 --debug -std=c++11 #-DDEBUG
 # CXXFLAGS := -O3 -g -std=c++11 
 
 # define some options
@@ -17,7 +17,8 @@ DEF :=
 
 # linker specific flags
 # LDFLAGS := -L/Users/DeeGee/Documents/lide.space/FDR_data/Kalman/eigen/build/include/Eigen
-LDFLAGS := -L/usr/local/Cellar/gcc/9.1.0/lib/gcc/9 -lstdc++
+# LDFLAGS := -L/usr/local/Cellar/gcc/9.1.0/lib/gcc/9 -lstdc++
+LDFLAGS :=  -lstdc++
 
 #-----------------------------------------------------------------------------
 BUILDDIR := ./build

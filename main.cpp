@@ -53,7 +53,7 @@ int main(int argc, char* argv[])
 
     //Working variables
     char buff[512];
-    double t_prev=0.;
+    double t_prev=-1.;
     double lon,lat,alt,v;
     double lon_prev=0., lat_prev=0., alt_prev=0.,theta, bgx,bgy,bgz,bax,bay,baz;
     bool init = true;
@@ -73,15 +73,25 @@ int main(int argc, char* argv[])
         alt = alt_i/100.0;
         v   = v_i*1.852 /1000.; //mkn 2 m/s
 
-    
+        if(t_prev>=0 && t_prev > t){
+            printf("Skipping time step after t_prev =%lf because dt<0 (t=%lf)...\n\n",t_prev,t);
+            continue;
+        }
 
         vn = (lat-lat_prev)/(t-t_prev)*R_e;
         ve = (lon-lon_prev)/(t-t_prev)*R_e *sin(lat);
         vd = (alt-alt_prev)/(t-t_prev);
         vnorm = sqrt(ve*ve+vn*vn+vd*vd);
-        vn /= vnorm;
-        ve /= vnorm;
-        vd /= vnorm;
+        if (vnorm < 1e-5){
+            vn = 0.0;
+            ve = 0.0;
+            vd = 0.0;
+        } else {
+            vn /= vnorm;
+            ve /= vnorm;
+            vd /= vnorm;
+        }
+        
 
         if (init){
             vn   = 0.;
@@ -98,11 +108,12 @@ int main(int argc, char* argv[])
 
         //Perform filter operation:
 
-#ifdef DEBUG        
-        printf("ARGS: %12.10lg,%12.4e,%12.4e,%12.4e,%12.10e,%12.10e,%12.6e,%12.6e,%12.6e,%12.6e,%12.6e,%12.6e,%12.6e\n", \
-                            t, vn,ve,vd, lon,lat,alt, ax, ay, az, p,q,r);
-#endif
-        filter.update(t, vn, ve, vd, lat, lon, alt, p, q, r, ax, ay, az, 0.0,1.0,0.0);
+// #ifdef DEBUG        
+        printf("ARGS: %12.10lg,V:%12.4e,%12.4e,%12.4e,%12.4e,LLA:%12.10e,%12.10e,%12.6e:%12.6e,%12.6e,%12.6e,%12.6e,%12.6e,%12.6e\n", \
+                            t, vn,ve,vd,vnorm, lon,lat,alt, ax, ay, az, p,q,r);
+// #endif
+//-y x
+        filter.update(t, vn, ve, vd, lat, lon, alt, -q, p, r, -ay, ax, az, 0.0,1.0,0.0);
 
         theta = filter.getPitch_rad();
         phi   = filter.getRoll_rad();

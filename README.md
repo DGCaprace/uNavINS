@@ -21,6 +21,8 @@ Output data are formated like this: **t, theta, phi, psi, lat, lon, alt, vn, ve,
 
 ## Usage
 
+**CAUTION**: the script assumes that *x,y,z* are measured in airplane axes, with pointing out of the 
+nose, y pointing out of right wing and z pointing downward.
 
 
 # Original uNavINS

@@ -209,7 +209,8 @@ class uNavINS {
     Eigen::Matrix<float,6,1> y = Eigen::Matrix<float,6,1>::Zero();
     // GPS measurement noise
     Eigen::Matrix<float,6,6> R = Eigen::Matrix<float,6,6>::Zero();
-    Eigen::Matrix<float,15,1> x = Eigen::Matrix<float,15,1>::Zero();
+    // Tmp var for the Kalman update of the state
+    Eigen::Matrix<float,15,1> Dx = Eigen::Matrix<float,15,1>::Zero();
     // Kalman Gain
     Eigen::Matrix<float,15,6> K = Eigen::Matrix<float,15,6>::Zero();
     Eigen::Matrix<float,6,15> H = Eigen::Matrix<float,6,15>::Zero();

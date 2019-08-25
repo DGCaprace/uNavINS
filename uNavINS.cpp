@@ -40,8 +40,8 @@ void uNavINS::update(double TOW,double vn,double ve,double vd,double lat,double 
   //TODO proceed to init in another function?
   if (!initialized) {
     // initial attitude and heading
-    theta = asinf(ax/G);
-    phi = asinf(-ay/(G*cosf(theta)));
+    theta = asinf(-ax/G);
+    phi = asinf(ay/(G*cosf(theta)));
     // magnetic heading correction due to roll and pitch angle
     Bxc = hx*cosf(theta) + (hy*sinf(phi) + hz*cosf(phi))*sinf(theta);
     Byc = hy*cosf(phi) - hz*sinf(phi);
@@ -118,6 +118,11 @@ psi = 0;
     // _dt = (float)_t/1000.0;
     // _t = 0;
 
+    if ( _dt < 0) {
+      printf("Warning !! dt<0...\n\n",_dt);
+      return;
+    }
+
 #ifdef DEBUG
     printf("%12.10lf,%12.10lf - %12.10lf,%12.10lf  -  %12.10lf,%12.10lf\n",_t,_dt,lat,lat_ins,lon,lon_ins);
 #endif  
@@ -176,6 +181,9 @@ psi = 0;
 
     // Velocity time Update
     dx = C_B2N*f_b + grav;   //DG: deleting the gravity vector from f_b !!
+
+printf("dx/fb: %f,%f,%f,%f,%f,%f,%f,%f,%f \n ",dx(0,0),dx(1,0),dx(2,0),f_b(0,0),f_b(1,0),f_b(2,0),ax,ay,az);
+
     vn_ins += _dt*dx(0,0);
     ve_ins += _dt*dx(1,0);
     vd_ins += _dt*dx(2,0);
@@ -233,7 +241,7 @@ psi = 0;
 
 // ----------------------- CORRECTION = KALMAN -----------------------------------
 
-    if ((TOW - previousTOW) > 0) {
+    // if ((TOW - previousTOW) > 0) {
       previousTOW = TOW;
       lla_gps(0,0) = lat;
       lla_gps(1,0) = lon;
@@ -256,7 +264,7 @@ psi = 0;
       pos_ned_ins = ecef2ned(pos_ecef_ins,lla_ins);
       pos_ecef_gps = lla2ecef(lla_gps);
       pos_ned_gps = ecef2ned(pos_ecef_gps,lla_ins);
-      // Create measurement Y
+      // Create measurement Y = actual meas - projected meas (not the opposite??)
       y(0,0) = (float)(pos_ned_gps(0,0) - pos_ned_ins(0,0));
       y(1,0) = (float)(pos_ned_gps(1,0) - pos_ned_ins(1,0));
       y(2,0) = (float)(pos_ned_gps(2,0) - pos_ned_ins(2,0));
@@ -272,11 +280,13 @@ psi = 0;
       K = P*H.transpose()*(H*P*H.transpose() + R).inverse();
       // Covariance update (a posteriori)
       P = (Eigen::Matrix<float,15,15>::Identity()-K*H)*P*(Eigen::Matrix<float,15,15>::Identity()-K*H).transpose() + K*R*K.transpose();
+//wtf? the article says P = (I-KH)*Pprev, not P = (I-KH)*Pprev*(I-KH)^T + K*R+K^-1
+
       // State update
-      x = K*y;
+      Dx = K*y;
 
 #ifdef DEBUG
-      printf("S: %f,%f,%f,%f,%f,%f,%f   \n",x(0,0),x(1,0),x(2,0),x(3,0),x(4,0),x(5,0),x(6,0),x(7,0));
+      printf("S: %f,%f,%f,%f,%f,%f,%f   \n",Dx(0,0),Dx(1,0),Dx(2,0),Dx(3,0),Dx(4,0),Dx(5,0),Dx(6,0),Dx(7,0));
 #endif
 
       //Updating all other variables related to states:  
@@ -286,38 +296,48 @@ psi = 0;
       Re = EARTH_RADIUS / sqrt(denom);
       Rn = EARTH_RADIUS*(1.0-ECC2) / denom*sqrt(denom);
       
-      alt_ins = alt_ins - x(2,0);
-      lat_ins = lat_ins + x(0,0) / (Re + alt_ins);
-      lon_ins = lon_ins + x(1,0) / (Rn + alt_ins) / cos(lat_ins);
+//DG: I don't understand why 
 
-      vn_ins = vn_ins + x(3,0);
-      ve_ins = ve_ins + x(4,0);
-      vd_ins = vd_ins + x(5,0);
+      alt_ins = alt_ins - Dx(2,0);
+      lat_ins = lat_ins + Dx(0,0) / (Re + alt_ins);
+      lon_ins = lon_ins + Dx(1,0) / (Rn + alt_ins) / cos(lat_ins);
+
+      vn_ins = vn_ins + Dx(3,0);
+      ve_ins = ve_ins + Dx(4,0);
+      vd_ins = vd_ins + Dx(5,0);
       
       // Attitude correction
+      //DX(6:8) are phi theta psi, but we want to uptade quat as well...
       dq(0,0) = 1.0f;
-      dq(1,0) = x(6,0);
-      dq(2,0) = x(7,0);
-      dq(3,0) = x(8,0);
+      dq(1,0) = Dx(6,0);
+      dq(2,0) = Dx(7,0);
+      dq(3,0) = Dx(8,0);
       quat = qmult(quat,dq);
       quat.normalize();
 
-      printf("TPS : %f,%f,%f    ",theta, phi, psi);
+// #ifdef DEBUG
+      printf("TPS : %f,%f,%f    ",Dx(6,0),Dx(7,0),Dx(8,0));
+// #endif
 
       // obtain euler angles from quaternion
       theta = asinf(-2.0f*(quat(1,0)*quat(3,0)-quat(0,0)*quat(2,0)));
       phi = atan2f(2.0f*(quat(0,0)*quat(1,0)+quat(2,0)*quat(3,0)),1.0f-2.0f*(quat(1,0)*quat(1,0)+quat(2,0)*quat(2,0)));
       psi = atan2f(2.0f*(quat(1,0)*quat(2,0)+quat(0,0)*quat(3,0)),1.0f-2.0f*(quat(2,0)*quat(2,0)+quat(3,0)*quat(3,0)));
 
+//#ifdef DEBUG
+      printf("TPS : %f,%f,%f    ",theta, phi, psi);
+//#endif
       // These are the biases on acceleration and gyro measurements, that we track as states.
-      abx = abx + x(9,0);
-      aby = aby + x(10,0);
-      abz = abz + x(11,0);
-      gbx = gbx + x(12,0);
-      gby = gby + x(13,0);
-      gbz = gbz + x(14,0);
+      abx = abx + Dx(9,0);
+      aby = aby + Dx(10,0);
+      abz = abz + Dx(11,0);
+      gbx = gbx + Dx(12,0);
+      gby = gby + Dx(13,0);
+      gbz = gbz + Dx(14,0);
 
+#ifdef DEBUG
       printf("update: %f,%f,%f\n",theta, phi, psi);
+#endif
     }
     // Get the new Specific forces and Rotation Rate,
     // use in the next time update
@@ -333,7 +353,7 @@ psi = 0;
     om_ib(0,0) = p; //- gbx;
     om_ib(1,0) = q; //- gby;
     om_ib(2,0) = r; //- gbz;
-  }
+  // }
 
   printf("\n\n");
 }
